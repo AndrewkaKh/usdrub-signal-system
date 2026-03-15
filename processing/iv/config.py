@@ -4,4 +4,5 @@ TENOR_CONFIG = {
     '6m': {'target_days': 180, 'tolerance_days': 25},
 }
 
+ATM_CANDIDATES_PER_SIDE = 5
 DEFAULT_RATE = 0.0

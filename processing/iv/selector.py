@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from datetime import datetime
 
 import pandas as pd
@@ -117,34 +119,36 @@ def select_underlying_for_expiry(prepared_df: pd.DataFrame, expiry: datetime) ->
     return str(underlying_counts.idxmax())
 
 
-def _select_best_by_type(
+def _select_candidates_by_type(
     prepared_df: pd.DataFrame,
     expiry: datetime,
     underlying_contract: str,
     option_type: str,
     futures_price: float,
-) -> pd.Series | None:
+    limit: int,
+) -> list[pd.Series]:
     subset = prepared_df[
         (prepared_df['expiry_dt'] == expiry)
         & (prepared_df['underlying_contract'] == underlying_contract)
         & (prepared_df['option_type_norm'] == option_type)
     ].copy()
     if subset.empty:
-        return None
+        return []
 
     subset['distance'] = (subset['strike_num'] - futures_price).abs()
     subset['open_interest_num'] = subset['open_interest_num'].fillna(0.0)
     subset['volume_num'] = subset['volume_num'].fillna(0.0)
     subset = subset.sort_values(['distance', 'open_interest_num', 'volume_num'], ascending=[True, False, False])
-    return subset.iloc[0]
+    return [row for _, row in subset.head(limit).iterrows()]
 
 
-def select_atm_pair(
+def select_atm_candidates(
     prepared_df: pd.DataFrame,
     expiry: datetime,
     underlying_contract: str,
     futures_price: float,
-) -> dict[str, pd.Series | None]:
-    call_row = _select_best_by_type(prepared_df, expiry, underlying_contract, 'c', futures_price)
-    put_row = _select_best_by_type(prepared_df, expiry, underlying_contract, 'p', futures_price)
-    return {'call': call_row, 'put': put_row}
+    limit: int,
+) -> dict[str, list[pd.Series]]:
+    call_rows = _select_candidates_by_type(prepared_df, expiry, underlying_contract, 'c', futures_price, limit)
+    put_rows = _select_candidates_by_type(prepared_df, expiry, underlying_contract, 'p', futures_price, limit)
+    return {'call': call_rows, 'put': put_rows}

@@ -6,8 +6,8 @@ from typing import Any
 from processing.moex_client import fetch_futures_price, fetch_option_marketdata, fetch_options_table
 
 from .calculator import calculate_option_iv, extract_option_price
-from .config import TENOR_CONFIG
-from .selector import prepare_options_dataframe, select_atm_pair, select_expiry_for_tenor, select_market_subset, select_underlying_for_expiry
+from .config import ATM_CANDIDATES_PER_SIDE, TENOR_CONFIG
+from .selector import prepare_options_dataframe, select_atm_candidates, select_expiry_for_tenor, select_market_subset, select_underlying_for_expiry
 from .utils import compute_time_to_expiry
 
 
@@ -20,6 +20,7 @@ def _empty_leg() -> dict[str, Any]:
         'iv': None,
         'status': 'not_used',
         'message': None,
+        'attempted_secids': [],
     }
 
 
@@ -41,41 +42,55 @@ def _build_empty_metric(target_days: int, tolerance_days: int, status: str, mess
     }
 
 
-def _evaluate_leg(row: Any, futures_price: float, t: float) -> dict[str, Any]:
-    if row is None:
+def _evaluate_leg_candidates(rows: list[Any], futures_price: float, t: float) -> dict[str, Any]:
+    if not rows:
         leg = _empty_leg()
         leg['status'] = 'atm_option_not_found'
-        leg['message'] = 'ATM option for this side was not found'
+        leg['message'] = 'No ATM candidates found for this side'
         return leg
 
-    secid = row['SECID']
-    strike = float(row['strike_num'])
-    marketdata = fetch_option_marketdata(secid)
-    price, price_source = extract_option_price(marketdata)
+    attempted_secids = []
+    saw_price = False
+    last_error = None
 
-    leg = {
-        'secid': secid,
-        'strike': strike,
-        'price': price,
-        'price_source': price_source,
+    for row in rows:
+        secid = row['SECID']
+        attempted_secids.append(secid)
+        strike = float(row['strike_num'])
+        marketdata = fetch_option_marketdata(secid)
+        price, price_source = extract_option_price(marketdata)
+
+        if price is None:
+            last_error = 'Could not extract valid market price'
+            continue
+
+        saw_price = True
+        iv, error = calculate_option_iv(price, futures_price, strike, t, row['option_type_norm'])
+        if iv is None:
+            last_error = error
+            continue
+
+        return {
+            'secid': secid,
+            'strike': strike,
+            'price': price,
+            'price_source': price_source,
+            'iv': iv,
+            'status': 'ok',
+            'message': None,
+            'attempted_secids': attempted_secids,
+        }
+
+    return {
+        'secid': None,
+        'strike': None,
+        'price': None,
+        'price_source': None,
         'iv': None,
-        'status': 'option_price_missing',
-        'message': 'Could not extract valid market price',
+        'status': 'iv_failed' if saw_price else 'option_price_missing',
+        'message': last_error or 'No valid ATM candidates found',
+        'attempted_secids': attempted_secids,
     }
-
-    if price is None:
-        return leg
-
-    iv, error = calculate_option_iv(price, futures_price, strike, t, row['option_type_norm'])
-    if iv is None:
-        leg['status'] = 'iv_failed'
-        leg['message'] = error
-        return leg
-
-    leg['iv'] = iv
-    leg['status'] = 'ok'
-    leg['message'] = None
-    return leg
 
 
 def _combine_metric(
@@ -190,9 +205,15 @@ def calculate_iv_snapshot(
             continue
 
         t = compute_time_to_expiry(as_of, expiry)
-        pair = select_atm_pair(market_subset, expiry, selected_underlying, futures_price)
-        call_leg = _evaluate_leg(pair['call'], futures_price, t)
-        put_leg = _evaluate_leg(pair['put'], futures_price, t)
+        candidates = select_atm_candidates(
+            market_subset,
+            expiry,
+            selected_underlying,
+            futures_price,
+            ATM_CANDIDATES_PER_SIDE,
+        )
+        call_leg = _evaluate_leg_candidates(candidates['call'], futures_price, t)
+        put_leg = _evaluate_leg_candidates(candidates['put'], futures_price, t)
         metrics[tenor_label] = _combine_metric(
             target_days,
             tolerance_days,
