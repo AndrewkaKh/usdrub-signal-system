@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from processing.moex_client import fetch_futures_price, fetch_option_marketdata, fetch_options_table
+from processing.moex_client import MoexRequestError, fetch_futures_price, fetch_option_marketdata, fetch_options_table
 
 from .calculator import calculate_option_iv, extract_option_price
 from .config import ATM_CANDIDATES_PER_SIDE, TENOR_CONFIG
@@ -51,13 +51,21 @@ def _evaluate_leg_candidates(rows: list[Any], futures_price: float, t: float) ->
 
     attempted_secids = []
     saw_price = False
+    saw_network_error = False
     last_error = None
 
     for row in rows:
         secid = row['SECID']
         attempted_secids.append(secid)
         strike = float(row['strike_num'])
-        marketdata = fetch_option_marketdata(secid)
+
+        try:
+            marketdata = fetch_option_marketdata(secid)
+        except MoexRequestError as exc:
+            saw_network_error = True
+            last_error = str(exc)
+            continue
+
         price, price_source = extract_option_price(marketdata)
 
         if price is None:
@@ -81,13 +89,15 @@ def _evaluate_leg_candidates(rows: list[Any], futures_price: float, t: float) ->
             'attempted_secids': attempted_secids,
         }
 
+    status = 'network_error' if saw_network_error and not saw_price else ('iv_failed' if saw_price else 'option_price_missing')
+
     return {
         'secid': None,
         'strike': None,
         'price': None,
         'price_source': None,
         'iv': None,
-        'status': 'iv_failed' if saw_price else 'option_price_missing',
+        'status': status,
         'message': last_error or 'No valid ATM candidates found',
         'attempted_secids': attempted_secids,
     }
@@ -116,8 +126,12 @@ def _combine_metric(
         message = 'Only one side produced valid IV'
         metric_iv = valid_ivs[0]
     else:
-        status = 'iv_failed'
-        message = 'Neither call nor put produced valid IV'
+        if call_leg['status'] == 'network_error' or put_leg['status'] == 'network_error':
+            status = 'network_error'
+            message = 'Could not fetch all option market data from MOEX'
+        else:
+            status = 'iv_failed'
+            message = 'Neither call nor put produced valid IV'
         metric_iv = None
 
     return {
@@ -144,7 +158,21 @@ def calculate_iv_snapshot(
 ) -> dict[str, Any]:
     as_of = as_of or datetime.now()
 
-    options_raw = fetch_options_table()
+    try:
+        options_raw = fetch_options_table()
+    except MoexRequestError as exc:
+        return {
+            'timestamp': as_of.isoformat(),
+            'asset_code': asset_code,
+            'requested_underlying': underlying,
+            'status': 'source_unavailable',
+            'message': str(exc),
+            'metrics': {
+                tenor: _build_empty_metric(cfg['target_days'], cfg['tolerance_days'], 'source_unavailable', 'Could not fetch options table from MOEX')
+                for tenor, cfg in TENOR_CONFIG.items()
+            },
+        }
+
     options_prepared = prepare_options_dataframe(options_raw)
     market_subset = select_market_subset(options_prepared, asset_code=asset_code, preferred_underlying=underlying)
 
@@ -228,6 +256,8 @@ def calculate_iv_snapshot(
         )
 
     overall_status = 'ok' if any(metric['iv'] is not None for metric in metrics.values()) else 'iv_failed'
+    if all(metric['status'] == 'network_error' for metric in metrics.values()):
+        overall_status = 'network_error'
 
     return {
         'timestamp': as_of.isoformat(),

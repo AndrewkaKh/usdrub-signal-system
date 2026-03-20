@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import pandas as pd
@@ -9,13 +10,35 @@ MOEX_OPTIONS_URL = 'https://iss.moex.com/iss/engines/futures/markets/options/sec
 MOEX_OPTION_DATA_URL = 'https://iss.moex.com/iss/engines/futures/markets/options/securities/{secid}.json'
 MOEX_FUTURES_SECURITY_URL = 'https://iss.moex.com/iss/engines/futures/markets/forts/securities/{secid}.json'
 MOEX_SECURITY_URL = 'https://iss.moex.com/iss/securities/{secid}.json'
-DEFAULT_TIMEOUT = 15
+
+CONNECT_TIMEOUT = 5
+READ_TIMEOUT = 25
+REQUEST_RETRIES = 3
+RETRY_SLEEP_SECONDS = 1.5
+
+
+class MoexRequestError(RuntimeError):
+    pass
 
 
 def _request_json(url: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-    response = requests.get(url, params=params, timeout=DEFAULT_TIMEOUT)
-    response.raise_for_status()
-    return response.json()
+    last_error: Exception | None = None
+
+    for attempt in range(1, REQUEST_RETRIES + 1):
+        try:
+            response = requests.get(
+                url,
+                params=params,
+                timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as exc:
+            last_error = exc
+            if attempt < REQUEST_RETRIES:
+                time.sleep(RETRY_SLEEP_SECONDS)
+
+    raise MoexRequestError(f'MOEX request failed after {REQUEST_RETRIES} attempts: {last_error}')
 
 
 def _frame_from_block(payload: dict[str, Any], block_name: str) -> pd.DataFrame:
@@ -104,7 +127,7 @@ def fetch_futures_price(secid: str) -> tuple[float | None, str | None]:
         price, source = _extract_price_from_snapshot(snapshot)
         if price is not None:
             return price, f'forts:{source}'
-    except requests.RequestException:
+    except MoexRequestError:
         pass
 
     try:
@@ -112,7 +135,7 @@ def fetch_futures_price(secid: str) -> tuple[float | None, str | None]:
         price, source = _extract_price_from_snapshot(snapshot)
         if price is not None:
             return price, f'generic:{source}'
-    except requests.RequestException:
+    except MoexRequestError:
         pass
 
     return None, None
