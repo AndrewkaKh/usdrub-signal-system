@@ -11,4 +11,5 @@ env/
 .DS_Store
 Thumbs.db
 
-data/*.csv
+data/*
+*.bat
