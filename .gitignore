@@ -13,3 +13,6 @@ Thumbs.db
 
 data/*
 *.bat
+docs/*
+dataset_qc.py
+catboost_info/

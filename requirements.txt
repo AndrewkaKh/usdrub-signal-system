@@ -1,3 +1,6 @@
 pandas
 requests
 py_vollib
+catboost
+yfinance
+python-dateutil

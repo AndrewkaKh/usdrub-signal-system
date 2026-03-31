@@ -1,0 +1,71 @@
+{
+  "trained_at": "2026-04-09T15:20:43",
+  "feature_cols": [
+    "iv_1m",
+    "hv_1m",
+    "spread_1m",
+    "days_to_expiry_1m",
+    "iv_3m",
+    "hv_3m",
+    "spread_3m",
+    "ts_3m_1m",
+    "days_to_expiry_3m",
+    "iv_1m_lag1",
+    "iv_1m_lag2",
+    "iv_1m_lag3",
+    "iv_1m_lag5",
+    "hv_1m_lag1",
+    "hv_1m_lag2",
+    "hv_1m_lag3",
+    "spread_1m_lag1",
+    "spread_1m_lag2",
+    "spread_1m_lag3",
+    "ts_3m_1m_lag1",
+    "ts_3m_1m_lag2",
+    "ts_3m_1m_lag3",
+    "iv_1m_roll5_mean",
+    "iv_1m_roll10_mean",
+    "iv_1m_roll5_std",
+    "iv_1m_roll21_mean",
+    "day_of_week",
+    "month",
+    "brent_lag1",
+    "brent_lag2",
+    "dxy_lag1",
+    "dxy_lag2",
+    "vix_lag1",
+    "vix_lag2",
+    "vix_roll5_mean",
+    "cbr_rate"
+  ],
+  "target_col": "target_delta_iv_1m",
+  "train_period": {
+    "start": "2021-02-08",
+    "end": "2024-12-26"
+  },
+  "val_period": {
+    "start": "2025-01-06",
+    "end": "2025-07-31"
+  },
+  "test_period": {
+    "start": "2025-08-01",
+    "end": "2026-02-26"
+  },
+  "metrics": {
+    "val": {
+      "rmse": 0.014217,
+      "mae": 0.01015,
+      "mape": 180.1503
+    },
+    "test": {
+      "rmse": 0.008749,
+      "mae": 0.005857,
+      "mape": 846.5343
+    }
+  },
+  "baseline_test_rmse": 0.009037,
+  "n_train_rows": 903,
+  "n_val_rows": 135,
+  "n_test_rows": 130,
+  "dataset_version": "model_dataset_daily.csv"
+}
