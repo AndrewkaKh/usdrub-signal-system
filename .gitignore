@@ -16,3 +16,4 @@ data/*
 docs/*
 dataset_qc.py
 catboost_info/
+.claude

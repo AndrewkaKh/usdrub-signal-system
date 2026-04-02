@@ -4,14 +4,19 @@ Usage:
     python model_runner.py --retrain
     python model_runner.py --predict --spot 85.50
     python model_runner.py --predict              # spot price auto-detected from DB
+    python model_runner.py --smile                # vol smile for latest date, both tenors
+    python model_runner.py --smile --date 2025-04-01 --tenor 1m
 """
 from __future__ import annotations
 
 import argparse
+import sqlite3
 import sys
 
 DATASET_CSV = 'data/exports/model_dataset_daily.csv'
 DB_PATH = 'data/backfill/moex_backfill.sqlite3'
+SMILE_CSV = 'data/exports/iv_smile_daily.csv'
+SMILE_METRICS_CSV = 'data/exports/iv_smile_metrics.csv'
 
 
 def cmd_eval_walkforward() -> None:
@@ -99,6 +104,116 @@ def cmd_predict(spot: float | None) -> None:
     return result
 
 
+def _fmt_iv(value: float | None) -> str:
+    """Format IV as percentage string, or '---' if unavailable."""
+    if value is None:
+        return '   --- '
+    return f'{value * 100:6.2f}%'
+
+
+def _fmt_metric(value: float | None, pct: bool = True) -> str:
+    """Format a smile metric (pct=True → multiply by 100 for display)."""
+    if value is None or (isinstance(value, float) and (value != value)):  # NaN check
+        return 'n/a'
+    if pct:
+        return f'{value * 100:+.2f}%'
+    return f'{value:.4f}'
+
+
+def _resolve_smile_date(connection, tenor: str) -> str | None:
+    """Return latest date in option_contract_candidates with valid data for tenor."""
+    cursor = connection.execute(
+        '''
+        SELECT MAX(date) FROM option_contract_candidates
+        WHERE target_tenor = ?
+        ''',
+        (tenor,),
+    )
+    row = cursor.fetchone()
+    return row[0] if row and row[0] else None
+
+
+def cmd_smile(date_str: str | None, tenor_filter: str | None) -> None:
+    from processing.dataset.iv_smile_builder import build_iv_smile
+    from processing.dataset.smile_metrics import compute_smile_metrics
+
+    tenors = [tenor_filter] if tenor_filter else ['1m', '3m']
+
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        # Resolve date
+        if date_str is None:
+            # Find latest date that has data for at least one requested tenor
+            candidate_dates = [_resolve_smile_date(conn, t) for t in tenors]
+            candidate_dates = [d for d in candidate_dates if d]
+            if not candidate_dates:
+                print('ERROR: No smile data found in DB.', file=sys.stderr)
+                sys.exit(1)
+            date_str = max(candidate_dates)
+            print(f'Latest available date: {date_str}')
+
+        smile_df = build_iv_smile(conn, date_str, date_str)
+    finally:
+        conn.close()
+
+    if smile_df.empty:
+        print(f'ERROR: No smile data found for date {date_str}.', file=sys.stderr)
+        sys.exit(1)
+
+    # Filter by tenor if requested
+    if tenor_filter:
+        smile_df = smile_df[smile_df['tenor'] == tenor_filter]
+        if smile_df.empty:
+            print(
+                f'ERROR: No smile data for tenor={tenor_filter} on {date_str}.',
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+    # Save CSVs
+    smile_df.to_csv(SMILE_CSV, index=False, sep=';')
+    metrics_df = compute_smile_metrics(smile_df)
+    metrics_df.to_csv(SMILE_METRICS_CSV, index=False, sep=';')
+
+    # Print per-tenor smile table
+    import math
+    for tenor, group in smile_df.groupby('tenor'):
+        group = group.sort_values('strike').copy()
+        futures_price = group['futures_price'].iloc[0]
+        spot_proxy = futures_price / 1000.0  # MOEX Si contract: 1 lot = 1000 USD
+
+        print(f'\n=== Volatility Smile: {date_str} | Tenor {tenor} | F={spot_proxy:.4f} (futures {int(futures_price)}) ===\n')
+        print(f'  {"Delta":>6}  {"Strike":>8}  {"Call IV":>8}  {"Put IV":>8}  {"Mid IV":>8}  Status')
+        print(f'  {"-"*6}  {"-"*8}  {"-"*8}  {"-"*8}  {"-"*8}  ------')
+
+        for _, row in group.iterrows():
+            delta_str = f'{row["delta_call"]:6.2f}' if row['delta_call'] is not None else '   --- '
+            strike_str = f'{int(row["strike"]):8d}'
+            # Mark ATM row (|moneyness| closest to 0)
+            atm_marker = ' <- ATM' if abs(row['moneyness']) == group['moneyness'].abs().min() else ''
+            print(
+                f'  {delta_str}  {strike_str}  '
+                f'{_fmt_iv(row["call_iv"])}  '
+                f'{_fmt_iv(row["put_iv"])}  '
+                f'{_fmt_iv(row["mid_iv"])}  '
+                f'{row["status"]}{atm_marker}'
+            )
+
+        # Print smile metrics for this tenor
+        m_row = metrics_df[metrics_df['tenor'] == tenor]
+        if not m_row.empty:
+            m = m_row.iloc[0]
+            print(f'\n  Smile metrics ({int(m["n_strikes"])} strikes):')
+            print(f'    ATM vol : {_fmt_iv(m["atm_vol"])}')
+            rr25_skew = ' (put skew)' if (isinstance(m['rr25'], float) and m['rr25'] == m['rr25'] and m['rr25'] < 0) else ''
+            print(f'    RR25    : {_fmt_metric(m["rr25"])}{rr25_skew}')
+            print(f'    BF25    : {_fmt_metric(m["bf25"])}')
+            print(f'    RR10    : {_fmt_metric(m["rr10"])}')
+
+    print(f'\nSaved: {SMILE_CSV}')
+    print(f'       {SMILE_METRICS_CSV}')
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description='IV model: train or predict next-day implied volatility.'
@@ -108,11 +223,26 @@ def main() -> None:
     group.add_argument('--predict', action='store_true', help='Run inference')
     group.add_argument('--eval-walkforward', action='store_true',
                        help='Walk-forward cross-validation (honest OOS evaluation)')
+    group.add_argument('--smile', action='store_true',
+                       help='Compute and display volatility smile (per-strike IV)')
     parser.add_argument(
         '--spot',
         type=float,
         default=None,
         help='Current USD/RUB spot price (required for --predict if DB unavailable)',
+    )
+    parser.add_argument(
+        '--date',
+        type=str,
+        default=None,
+        help='Date for --smile in YYYY-MM-DD format (default: latest available)',
+    )
+    parser.add_argument(
+        '--tenor',
+        type=str,
+        default=None,
+        choices=['1m', '3m'],
+        help='Tenor filter for --smile (default: both 1m and 3m)',
     )
     args = parser.parse_args()
 
@@ -122,6 +252,8 @@ def main() -> None:
         cmd_predict(args.spot)
     elif args.eval_walkforward:
         cmd_eval_walkforward()
+    elif args.smile:
+        cmd_smile(args.date, args.tenor)
 
 
 if __name__ == '__main__':
