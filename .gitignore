@@ -17,3 +17,6 @@ docs/*
 dataset_qc.py
 catboost_info/
 .claude
+.env
+publish_evening.py
+publish_morning.py

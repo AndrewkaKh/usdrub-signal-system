@@ -4,3 +4,6 @@ py_vollib
 catboost
 yfinance
 python-dateutil
+schedule
+python-dotenv
+pydantic-settings

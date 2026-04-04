@@ -95,6 +95,81 @@ def build_daily_index(start: str, end: str) -> pd.DatetimeIndex:
     return pd.date_range(start=start, end=end, freq='D', name='date')
 
 
+def update_external_features(
+    end_date: str | None = None,
+    output_path: Path = OUTPUT_PATH,
+) -> pd.DataFrame:
+    """Fetch external features up to end_date and save/append to CSV.
+
+    Downloads Brent, DXY, VIX from Yahoo Finance and CBR key rate,
+    then forward-fills gaps and saves the result to output_path.
+
+    Parameters
+    ----------
+    end_date:
+        Last date to include (ISO string). Defaults to today.
+    output_path:
+        Where to save the CSV. Defaults to OUTPUT_PATH.
+
+    Returns
+    -------
+    pd.DataFrame — the last row (most recent date) as a single-row DataFrame.
+    """
+    today = pd.Timestamp.today().strftime('%Y-%m-%d')
+    end = end_date or today
+
+    market = fetch_yfinance(
+        tickers={'brent': 'BZ=F', 'dxy': 'DX-Y.NYB', 'vix': '^VIX'},
+        start=DEFAULT_START,
+        end=end,
+    )
+    cbr = fetch_cbr_rate(start=DEFAULT_START, end=end)
+
+    idx = build_daily_index(DEFAULT_START, end)
+    df = pd.DataFrame(index=idx)
+    df = df.join(market, how='left')
+    df = df.join(cbr, how='left')
+    df = df.ffill()
+    df.index.name = 'date'
+    df = df.reset_index()
+    df['date'] = df['date'].dt.strftime('%Y-%m-%d')
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(output_path, index=False, sep=';')
+
+    return df.tail(1)
+
+
+def get_latest_external_features(
+    output_path: Path = OUTPUT_PATH,
+    max_staleness_days: int = 3,
+) -> tuple[dict, bool]:
+    """Read the latest row from the external features CSV.
+
+    Returns
+    -------
+    (data_dict, is_fresh): data_dict has keys brent/dxy/vix/cbr_rate/date.
+    is_fresh is True if the latest date is within max_staleness_days of today.
+    """
+    if not output_path.exists():
+        return {}, False
+
+    df = pd.read_csv(output_path, sep=';')
+    if df.empty:
+        return {}, False
+
+    last = df.dropna(subset=['brent', 'dxy', 'vix']).tail(1)
+    if last.empty:
+        return {}, False
+
+    row = last.iloc[0].to_dict()
+    last_date = pd.Timestamp(row['date'])
+    days_old = (pd.Timestamp.today() - last_date).days
+    is_fresh = days_old <= max_staleness_days
+
+    return row, is_fresh
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description='Fetch external features for ML model.')
     parser.add_argument('--start', default=DEFAULT_START, help='Start date YYYY-MM-DD')
