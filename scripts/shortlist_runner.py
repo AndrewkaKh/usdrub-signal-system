@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import argparse
-from datetime import date, datetime
+import sys
+from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from cli_utils import parse_date
 from processing.backfill import (
     build_candidate_tables,
     get_connection,
@@ -10,10 +14,6 @@ from processing.backfill import (
     save_option_contract_candidates,
     save_option_series_candidates,
 )
-
-
-def parse_date(value: str) -> date:
-    return datetime.strptime(value, '%Y-%m-%d').date()
 
 
 def build_parser() -> argparse.ArgumentParser:

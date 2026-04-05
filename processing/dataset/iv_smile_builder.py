@@ -25,14 +25,13 @@ from scipy.stats import norm
 from processing.iv.calculator import calculate_option_iv
 from processing.iv.utils import compute_time_to_expiry
 
-# Reuse shared helpers from iv_daily_builder (no modification to that module)
-from .iv_daily_builder import (
-    _choose_series,
-    _choose_underlying_future,
-    _load_contract_candidates,
-    _load_futures_raw,
-    _prepare_futures,
-    _prepare_options,
+from .selection import (
+    choose_series,
+    choose_underlying_future,
+    load_contract_candidates,
+    load_futures_raw,
+    prepare_futures,
+    prepare_options,
 )
 
 
@@ -163,11 +162,11 @@ def build_iv_smile(connection, start_date: str, end_date: str) -> pd.DataFrame:
     pd.DataFrame with one row per (date, tenor, strike).
     Empty DataFrame if no data found.
     """
-    options_raw = _load_contract_candidates(connection, start_date, end_date)
-    futures_raw = _load_futures_raw(connection, start_date, end_date)
+    options_raw = load_contract_candidates(connection, start_date, end_date)
+    futures_raw = load_futures_raw(connection, start_date, end_date)
 
-    options = _prepare_options(options_raw)
-    futures = _prepare_futures(futures_raw)
+    options = prepare_options(options_raw)
+    futures = prepare_futures(futures_raw)
 
     if options.empty:
         return pd.DataFrame()
@@ -175,12 +174,12 @@ def build_iv_smile(connection, start_date: str, end_date: str) -> pd.DataFrame:
     all_rows: list[dict] = []
 
     for (date_value, target_tenor), options_group in options.groupby(['date', 'target_tenor']):
-        selected_options = _choose_series(options_group, target_tenor)
+        selected_options = choose_series(options_group, target_tenor)
         if selected_options.empty:
             continue
 
         futures_group = futures[futures['date'] == date_value].copy()
-        underlying_secid, futures_price = _choose_underlying_future(selected_options, futures_group)
+        underlying_secid, futures_price = choose_underlying_future(selected_options, futures_group)
         if underlying_secid is None or futures_price is None:
             continue
 

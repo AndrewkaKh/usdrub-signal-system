@@ -1,3 +1,8 @@
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from processing.features import save_feature_row
 from processing.hv import calculate_hv_snapshot, save_hv_snapshot
 from processing.iv import calculate_iv_snapshot, save_iv_snapshot

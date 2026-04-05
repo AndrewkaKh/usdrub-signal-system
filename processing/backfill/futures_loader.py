@@ -7,14 +7,7 @@ import pandas as pd
 import requests
 
 from .config import BASE_ASSET_CODE, FUTURES_HISTORY_URL, ISS_PAGE_SIZE_HINT, REQUEST_TIMEOUT_SECONDS
-
-
-def _normalize_date(value: date | datetime | str) -> date:
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    return datetime.strptime(str(value), '%Y-%m-%d').date()
+from ..utils import normalize_date
 
 
 def _coerce_float_series(series: pd.Series) -> pd.Series:
@@ -106,14 +99,14 @@ def _standardize_futures_frame(frame: pd.DataFrame, trading_date: date) -> pd.Da
 
 
 def fetch_futures_for_date(session: requests.Session, trading_date: date | datetime | str) -> pd.DataFrame:
-    normalized_date = _normalize_date(trading_date)
+    normalized_date = normalize_date(trading_date)
     raw = _fetch_full_history_for_date(session, normalized_date)
     return _standardize_futures_frame(raw, normalized_date)
 
 
 def load_futures_backfill(start_date: date | datetime | str, end_date: date | datetime | str) -> pd.DataFrame:
-    start_dt = _normalize_date(start_date)
-    end_dt = _normalize_date(end_date)
+    start_dt = normalize_date(start_date)
+    end_dt = normalize_date(end_date)
 
     frames: list[pd.DataFrame] = []
     current = start_dt

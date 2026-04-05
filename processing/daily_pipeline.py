@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from datetime import date, datetime
 
+from processing.utils import normalize_date
 from processing.backfill import (
     build_candidate_tables,
     build_missing_contract_references,
@@ -44,14 +45,6 @@ logger = logging.getLogger(__name__)
 DEFAULT_MODEL_CSV = 'data/exports/model_dataset_daily.csv'
 DEFAULT_IV_CSV = 'data/exports/iv_daily.csv'
 DEFAULT_HV_CSV = 'data/exports/hv_daily.csv'
-
-
-def _to_date(value: date | datetime | str) -> date:
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    return datetime.strptime(str(value), '%Y-%m-%d').date()
 
 
 def run_daily_pipeline(
@@ -86,8 +79,8 @@ def run_daily_pipeline(
     -------
     dict with counts of loaded/saved rows per stage, ready for logging.
     """
-    start = _to_date(start_date)
-    end = _to_date(end_date)
+    start = normalize_date(start_date)
+    end = normalize_date(end_date)
     start_iso = start.isoformat()
     end_iso = end.isoformat()
 

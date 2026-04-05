@@ -2,16 +2,12 @@ from __future__ import annotations
 
 import argparse
 import logging
-from datetime import date, datetime
 
+from cli_utils import parse_date
 from processing.backfill import get_connection, initialize_database
 from processing.daily_pipeline import run_daily_pipeline
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
-
-
-def parse_date(value: str) -> date:
-    return datetime.strptime(value, '%Y-%m-%d').date()
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -4,6 +4,8 @@ import sqlite3
 
 import pandas as pd
 
+from ..utils import normalize_frame
+
 
 FUTURES_COLUMNS = [
     'date',
@@ -86,23 +88,8 @@ OPTION_CONTRACT_REFERENCE_COLUMNS = [
 ]
 
 
-def _normalize_frame(frame: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
-    if frame.empty:
-        return pd.DataFrame(columns=columns)
-
-    normalized = frame.copy()
-
-    for column in columns:
-        if column not in normalized.columns:
-            normalized[column] = None
-
-    normalized = normalized[columns]
-    normalized = normalized.where(pd.notnull(normalized), None)
-    return normalized
-
-
 def save_futures_raw(connection: sqlite3.Connection, frame: pd.DataFrame) -> int:
-    normalized = _normalize_frame(frame, FUTURES_COLUMNS)
+    normalized = normalize_frame(frame, FUTURES_COLUMNS)
     if normalized.empty:
         return 0
 
@@ -133,7 +120,7 @@ def save_futures_raw(connection: sqlite3.Connection, frame: pd.DataFrame) -> int
 
 
 def save_options_raw(connection: sqlite3.Connection, frame: pd.DataFrame) -> int:
-    normalized = _normalize_frame(frame, OPTIONS_COLUMNS)
+    normalized = normalize_frame(frame, OPTIONS_COLUMNS)
     if normalized.empty:
         return 0
 
@@ -170,7 +157,7 @@ def save_options_raw(connection: sqlite3.Connection, frame: pd.DataFrame) -> int
 
 
 def save_option_series_candidates(connection: sqlite3.Connection, frame: pd.DataFrame) -> int:
-    normalized = _normalize_frame(frame, OPTION_SERIES_CANDIDATE_COLUMNS)
+    normalized = normalize_frame(frame, OPTION_SERIES_CANDIDATE_COLUMNS)
     if normalized.empty:
         return 0
 
@@ -200,7 +187,7 @@ def save_option_series_candidates(connection: sqlite3.Connection, frame: pd.Data
 
 
 def save_option_contract_candidates(connection: sqlite3.Connection, frame: pd.DataFrame) -> int:
-    normalized = _normalize_frame(frame, OPTION_CONTRACT_CANDIDATE_COLUMNS)
+    normalized = normalize_frame(frame, OPTION_CONTRACT_CANDIDATE_COLUMNS)
     if normalized.empty:
         return 0
 
@@ -233,7 +220,7 @@ def save_option_contract_candidates(connection: sqlite3.Connection, frame: pd.Da
 
 
 def save_option_contracts_reference(connection: sqlite3.Connection, frame: pd.DataFrame) -> int:
-    normalized = _normalize_frame(frame, OPTION_CONTRACT_REFERENCE_COLUMNS)
+    normalized = normalize_frame(frame, OPTION_CONTRACT_REFERENCE_COLUMNS)
     if normalized.empty:
         return 0
 

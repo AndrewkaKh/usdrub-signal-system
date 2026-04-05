@@ -4,6 +4,8 @@ import sqlite3
 
 import pandas as pd
 
+from ..utils import normalize_frame
+
 
 IV_DAILY_COLUMNS = [
     'date',
@@ -59,23 +61,8 @@ MODEL_DATASET_COLUMNS = [
 ]
 
 
-def _normalize_frame(frame: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
-    if frame.empty:
-        return pd.DataFrame(columns=columns)
-
-    normalized = frame.copy()
-
-    for column in columns:
-        if column not in normalized.columns:
-            normalized[column] = None
-
-    normalized = normalized[columns]
-    normalized = normalized.where(pd.notnull(normalized), None)
-    return normalized
-
-
 def save_iv_daily(connection: sqlite3.Connection, frame: pd.DataFrame) -> int:
-    normalized = _normalize_frame(frame, IV_DAILY_COLUMNS)
+    normalized = normalize_frame(frame, IV_DAILY_COLUMNS)
     if normalized.empty:
         return 0
 
@@ -113,7 +100,7 @@ def save_iv_daily(connection: sqlite3.Connection, frame: pd.DataFrame) -> int:
 
 
 def save_hv_daily(connection: sqlite3.Connection, frame: pd.DataFrame) -> int:
-    normalized = _normalize_frame(frame, HV_DAILY_COLUMNS)
+    normalized = normalize_frame(frame, HV_DAILY_COLUMNS)
     if normalized.empty:
         return 0
 
@@ -139,7 +126,7 @@ def save_hv_daily(connection: sqlite3.Connection, frame: pd.DataFrame) -> int:
 
 
 def save_model_dataset_daily(connection: sqlite3.Connection, frame: pd.DataFrame) -> int:
-    normalized = _normalize_frame(frame, MODEL_DATASET_COLUMNS)
+    normalized = normalize_frame(frame, MODEL_DATASET_COLUMNS)
     if normalized.empty:
         return 0
 

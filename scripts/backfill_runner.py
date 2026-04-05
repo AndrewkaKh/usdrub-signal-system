@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import argparse
-from datetime import date, datetime
+import sys
+from datetime import date
+from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from cli_utils import parse_date
 from processing.backfill import (
     get_connection,
     initialize_database,
@@ -12,10 +17,6 @@ from processing.backfill import (
     save_options_raw,
 )
 from processing.backfill.config import BACKFILL_END_DATE, BACKFILL_START_DATE, SQLITE_DB_PATH
-
-
-def parse_date(value: str) -> date:
-    return datetime.strptime(value, '%Y-%m-%d').date()
 
 
 def resolve_end_date() -> date:

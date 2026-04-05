@@ -4,19 +4,13 @@ from datetime import date, datetime
 
 import pandas as pd
 
+from ..utils import normalize_date
+
 
 TARGET_TENORS = {
     '1m': 1,
     '3m': 3,
 }
-
-
-def _normalize_date(value: date | datetime | str) -> date:
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    return datetime.strptime(str(value), '%Y-%m-%d').date()
 
 
 def _load_options_raw(connection, start_date: date, end_date: date) -> pd.DataFrame:
@@ -251,8 +245,8 @@ def build_candidate_tables(
     series_pool_size: int = 2,
     max_strikes_per_series: int = 10,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    start_dt = _normalize_date(start_date)
-    end_dt = _normalize_date(end_date)
+    start_dt = normalize_date(start_date)
+    end_dt = normalize_date(end_date)
 
     raw_options = _load_options_raw(connection, start_dt, end_dt)
     quality_options = _prepare_options_frame(raw_options)
