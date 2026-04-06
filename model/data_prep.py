@@ -6,6 +6,7 @@ import pandas as pd
 
 from .features import (
     TARGET_COL,
+    TARGET_RAW_DELTA_COL,
     FEATURE_COLS,
     LAG_COLS,
     ROLLING_COLS,
@@ -132,17 +133,30 @@ def prepare_dataset(csv_path: str) -> pd.DataFrame:
         df['cbr_meeting_day']          = is_meeting
         df['cbr_last_sentiment']       = last_sent
 
-    # --- Delta target: iv(t+1) - iv(t) ---
-    # Computed here rather than from CSV so it's always consistent with the
-    # filtered & sorted iv_1m series. Last row gets NaN (no next-day observation).
-    df['target_delta_iv_1m'] = df['iv_1m'].shift(-1) - df['iv_1m']
+    # --- Raw delta target: iv(t+1) - iv(t) ---
+    # Kept for baseline comparison and eval_targets / eval_thresholds commands.
+    # Last row gets NaN (no next-day observation — that is what we predict).
+    df[TARGET_RAW_DELTA_COL] = df['iv_1m'].shift(-1) - df['iv_1m']
+
+    # --- Sigma-normalised target (PRODUCTION) ---
+    # z = (iv(t+1) - iv(t)) / rolling_std(past_delta, 20)
+    #
+    # past_delta = iv(t) - iv(t-1): strictly causal (known at time t).
+    # rolling_std uses only past values → no lookahead.
+    # iv_rolling_std_20 is retained in the output for inverse transform at
+    # inference time: pred_delta = predicted_z * iv_rolling_std_20.
+    past_delta = df['iv_1m'].diff()
+    rolling_std_20 = past_delta.rolling(20, min_periods=5).std()
+    df['iv_rolling_std_20'] = rolling_std_20
+    df[TARGET_COL] = (df[TARGET_RAW_DELTA_COL] / rolling_std_20.clip(lower=1e-8))
 
     # Drop rows where required 1M lag features are NaN
     required_lag_cols = [c for c in LAG_COLS if c.startswith('iv_1m_lag')]
     df = df.dropna(subset=required_lag_cols).reset_index(drop=True)
 
     # Keep only columns we actually need
-    keep_cols = ['date', 'iv_1m'] + FEATURE_COLS + [TARGET_COL]
+    extra_cols = ['iv_rolling_std_20', TARGET_RAW_DELTA_COL]
+    keep_cols = ['date', 'iv_1m'] + FEATURE_COLS + [TARGET_COL] + extra_cols
     # Some cols may not be present if dataset is minimal — filter safely
     keep_cols = list(dict.fromkeys(c for c in keep_cols if c in df.columns))
     df = df[keep_cols].copy()

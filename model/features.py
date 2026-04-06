@@ -1,8 +1,25 @@
 from __future__ import annotations
 
-# Target variable: next-day IV change (delta)
-# Baseline for this target = predict 0 (no change), not current IV level.
-TARGET_COL = 'target_delta_iv_1m'
+# ── Production target ─────────────────────────────────────────────────────────
+# sigma_normalized_delta: (iv(t+1) - iv(t)) / rolling_std(past_delta, 20)
+#
+# Rationale (chosen via walk-forward eval_targets, 8 folds):
+#   sigma_norm  RMSE=0.01322  MAE=0.00881  SignAcc=58.5%  beats_MAE=6/8
+#   log_return  RMSE=0.01331  MAE=0.00883  SignAcc=58.3%  beats_MAE=5/8
+#   raw_delta   RMSE=0.01336  MAE=0.00896  SignAcc=55.8%  beats_MAE=5/8
+#
+# All metrics are in raw-delta-IV space (inverse-transformed for fair comparison).
+# Baseline in sigma space: predict 0 (no IV change) — identical economic meaning.
+# Inverse transform: pred_delta = predicted_z * current_rolling_std_20
+#
+TARGET_COL = 'target_sigma_normalized'   # column used for training
+PRODUCT_TARGET_TYPE = 'sigma_normalized_delta'
+
+# Raw-delta column — kept alongside the production target for:
+#   • baseline comparison in walk_forward_cv
+#   • interpretability in evaluate_and_save
+#   • eval_targets / eval_thresholds research commands
+TARGET_RAW_DELTA_COL = 'target_delta_iv_1m'
 
 # Base features present in model_dataset_daily.csv
 BASE_1M_COLS = ['iv_1m', 'hv_1m', 'spread_1m', 'days_to_expiry_1m']

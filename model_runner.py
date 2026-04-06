@@ -4,8 +4,15 @@ Usage:
     python model_runner.py --retrain
     python model_runner.py --predict --spot 85.50
     python model_runner.py --predict              # spot price auto-detected from DB
+    python model_runner.py --eval-walkforward     # baseline walk-forward CV
     python model_runner.py --smile                # vol smile for latest date, both tenors
     python model_runner.py --smile --date 2025-04-01 --tenor 1m
+
+Research commands (new):
+    python model_runner.py --analyze-target       # distribution analysis of delta IV
+    python model_runner.py --eval-targets         # compare raw_delta / log_return / sigma_norm
+    python model_runner.py --eval-thresholds      # 3-class classifier with threshold variants
+    python model_runner.py --eval-intervals       # quantile interval forecast evaluation
 """
 from __future__ import annotations
 
@@ -31,17 +38,31 @@ def cmd_eval_walkforward() -> None:
 
     results = walk_forward_cv(df, feature_cols=FEATURE_COLS)
 
-    print('\n=== Walk-Forward CV Summary ===')
-    print(results[['fold', 'train_end', 'eval_start', 'eval_end', 'n_eval',
-                    'rmse', 'baseline_rmse', 'beats_baseline']].to_string(index=False))
+    from model.features import PRODUCT_TARGET_TYPE
+    print(f'\n=== Walk-Forward CV Summary  [target: {PRODUCT_TARGET_TYPE}] ===')
 
-    mean_rmse = results['rmse'].mean()
-    mean_baseline = results['baseline_rmse'].mean()
-    beats_n = results['beats_baseline'].sum()
-    print(f'\nMean RMSE      : {mean_rmse:.5f}')
-    print(f'Mean baseline  : {mean_baseline:.5f}')
-    print(f'Beats baseline : {beats_n}/{len(results)} folds')
-    print(f'Improvement    : {(mean_baseline - mean_rmse) / mean_baseline * 100:.1f}%')
+    show_cols = ['fold', 'train_end', 'eval_start', 'eval_end', 'n_eval',
+                 'rmse_sigma', 'baseline_rmse_sigma', 'beats_baseline_sigma',
+                 'rmse_raw', 'sign_accuracy']
+    show_cols = [c for c in show_cols if c in results.columns]
+    print(results[show_cols].to_string(index=False))
+
+    mean_rmse_s = results['rmse_sigma'].mean()
+    mean_base_s = results['baseline_rmse_sigma'].mean()
+    beats_s = results['beats_baseline_sigma'].sum()
+    print(f'\n[sigma space]  Mean RMSE: {mean_rmse_s:.5f}  Baseline: {mean_base_s:.5f}  '
+          f'Beats: {beats_s}/{len(results)}  '
+          f'Improvement: {(mean_base_s - mean_rmse_s) / mean_base_s * 100:.1f}%')
+
+    if 'rmse_raw' in results.columns and results['rmse_raw'].notna().any():
+        mean_rmse_r = results['rmse_raw'].mean()
+        mean_base_r = results['baseline_rmse_raw'].mean()
+        beats_r = results['beats_baseline_raw'].sum()
+        mean_sign = results['sign_accuracy'].mean()
+        print(f'[raw delta IV] Mean RMSE: {mean_rmse_r:.5f}  Baseline: {mean_base_r:.5f}  '
+              f'Beats: {beats_r}/{len(results)}  '
+              f'Improvement: {(mean_base_r - mean_rmse_r) / mean_base_r * 100:.1f}%  '
+              f'SignAcc: {mean_sign:.3f}')
 
 
 def cmd_retrain() -> None:
@@ -89,9 +110,14 @@ def cmd_predict(spot: float | None) -> None:
         confidence=0.90,
     )
 
-    print('\n=== IV Forecast ===')
+    ttype = result.get('target_type', 'unknown')
+    print(f'\n=== IV Forecast  [target: {ttype}] ===')
     print(f'As of date        : {result["date"]}')
     print(f'Current IV 1M     : {result["current_iv_1m"]:.4f}  ({result["current_iv_1m"]*100:.2f}%)')
+    if result.get('predicted_z') is not None:
+        print(f'Predicted z       : {result["predicted_z"]:+.4f}  (sigma_normalized space)')
+        print(f'Rolling std (20d) : {result["current_rolling_std"]:.5f}')
+        print(f'Predicted Δ IV    : {result["predicted_delta_iv"]:+.5f}  (= z × rolling_std)')
     print(f'Predicted IV 1M   : {result["predicted_iv_1m"]:.4f}  ({result["predicted_iv_1m"]*100:.2f}%)')
     print(f'IV change (pred)  : {result["iv_change_pct"]:+.2f}%')
     print(f'\n=== Expected USD/RUB range (next trading day, {int(result["confidence"]*100)}% CI) ===')
@@ -214,6 +240,131 @@ def cmd_smile(date_str: str | None, tenor_filter: str | None) -> None:
     print(f'       {SMILE_METRICS_CSV}')
 
 
+def cmd_analyze_target() -> None:
+    from model.data_prep import prepare_dataset
+    from research.target_analysis import analyze_target, print_analysis
+
+    print(f'Loading dataset from {DATASET_CSV} ...')
+    df = prepare_dataset(DATASET_CSV)
+    print(f'Dataset ready: {len(df)} rows  ({df["date"].min().date()} – {df["date"].max().date()})')
+    print('\nAnalysing target distribution ...')
+
+    result = analyze_target(df)
+    print_analysis(result)
+
+
+def cmd_eval_targets() -> None:
+    from model.data_prep import prepare_dataset
+    from model.features import FEATURE_COLS
+    from research.eval_targets import (
+        eval_all_targets,
+        summarize_target_results,
+        print_target_comparison,
+        save_results,
+    )
+
+    print(f'Loading dataset from {DATASET_CSV} ...')
+    df = prepare_dataset(DATASET_CSV)
+    print(f'Dataset ready: {len(df)} rows  ({df["date"].min().date()} – {df["date"].max().date()})')
+    print('\nRunning walk-forward CV for all three target variants ...')
+
+    results = eval_all_targets(df, feature_cols=FEATURE_COLS)
+    summary = summarize_target_results(results)
+    print_target_comparison(results, summary)
+
+    folds_path, summary_path = save_results(results, summary)
+    print(f'\nSaved: {folds_path}')
+    print(f'       {summary_path}')
+
+
+def cmd_eval_thresholds() -> None:
+    from model.data_prep import prepare_dataset
+    from model.features import FEATURE_COLS
+    from research.eval_thresholds import (
+        eval_all_thresholds,
+        summarize_threshold_results,
+        print_threshold_comparison,
+        save_results,
+    )
+
+    print(f'Loading dataset from {DATASET_CSV} ...')
+    df = prepare_dataset(DATASET_CSV)
+    print(f'Dataset ready: {len(df)} rows  ({df["date"].min().date()} – {df["date"].max().date()})')
+    print('\nRunning walk-forward CV for 3-class classification (all threshold variants) ...')
+
+    results = eval_all_thresholds(df, feature_cols=FEATURE_COLS)
+    if results.empty:
+        print('No results produced (check dataset size).')
+        return
+
+    summary = summarize_threshold_results(results)
+    print_threshold_comparison(summary)
+
+    folds_path, summary_path = save_results(results, summary)
+    print(f'\nSaved: {folds_path}')
+    print(f'       {summary_path}')
+
+
+def cmd_eval_intervals(interval_target: str) -> None:
+    from model.data_prep import prepare_dataset
+    from model.features import FEATURE_COLS
+    from model.targets import SIGMA_NORM, RAW_DELTA, ALL_TARGETS
+    from research.eval_intervals import (
+        eval_intervals,
+        print_interval_summary,
+        save_results,
+    )
+    import pandas as pd
+
+    print(f'Loading dataset from {DATASET_CSV} ...')
+    df = prepare_dataset(DATASET_CSV)
+    print(f'Dataset ready: {len(df)} rows  ({df["date"].min().date()} – {df["date"].max().date()})')
+
+    targets_to_run = [RAW_DELTA, SIGMA_NORM] if interval_target == 'both' else [interval_target]
+
+    all_folds = []
+    all_preds = []
+
+    for tname in targets_to_run:
+        print(f'\n--- target: {tname} ---')
+        print('Metrics computed in raw-delta-IV space after inverse transform.\n')
+        fold_df, pred_df = eval_intervals(
+            df, feature_cols=FEATURE_COLS, target_name=tname
+        )
+        print_interval_summary(fold_df)
+        all_folds.append(fold_df)
+        all_preds.append(pred_df)
+
+    combined_folds = pd.concat(all_folds, ignore_index=True)
+    combined_preds = pd.concat(all_preds, ignore_index=True)
+
+    if interval_target == 'both' and len(targets_to_run) == 2:
+        _print_interval_comparison(combined_folds, targets_to_run)
+
+    folds_path, pred_path = save_results(combined_folds, combined_preds)
+    print(f'\nSaved: {folds_path}')
+    print(f'       {pred_path}')
+
+
+def _print_interval_comparison(fold_df, targets: list) -> None:
+    """Side-by-side comparison of two interval variants across folds."""
+    import pandas as pd
+    print('\n=== Comparison: interval forecast by target ===')
+    print(f'  {"":>28}  {"coverage":>8}  {"width":>10}  {"sign_acc":>8}')
+    for tname in targets:
+        sub = fold_df[fold_df['target_name'] == tname]
+        if sub.empty:
+            continue
+        cov = sub['empirical_coverage'].mean()
+        width = sub['avg_width_delta'].mean()
+        sign = sub['sign_accuracy_median'].mean()
+        target_cov = sub['target_coverage'].iloc[0]
+        print(
+            f'  {tname:<28}  {cov:.4f} ({cov-target_cov:+.3f})  '
+            f'{width:.6f}  {sign:.4f}'
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description='IV model: train or predict next-day implied volatility.'
@@ -225,6 +376,21 @@ def main() -> None:
                        help='Walk-forward cross-validation (honest OOS evaluation)')
     group.add_argument('--smile', action='store_true',
                        help='Compute and display volatility smile (per-strike IV)')
+    group.add_argument('--analyze-target', action='store_true',
+                       help='Analyse delta-IV distribution and suggest thresholds')
+    group.add_argument('--eval-targets', action='store_true',
+                       help='Compare raw_delta / log_return / sigma_norm targets (walk-forward)')
+    group.add_argument('--eval-thresholds', action='store_true',
+                       help='Evaluate 3-class classifier with multiple threshold strategies')
+    group.add_argument('--eval-intervals', action='store_true',
+                       help='Evaluate quantile interval forecasts (q10/q50/q90)')
+    parser.add_argument(
+        '--interval-target',
+        type=str,
+        default='both',
+        choices=['raw_delta', 'sigma_normalized_delta', 'both'],
+        help='Internal target for --eval-intervals (default: both)',
+    )
     parser.add_argument(
         '--spot',
         type=float,
@@ -254,6 +420,14 @@ def main() -> None:
         cmd_eval_walkforward()
     elif args.smile:
         cmd_smile(args.date, args.tenor)
+    elif args.analyze_target:
+        cmd_analyze_target()
+    elif args.eval_targets:
+        cmd_eval_targets()
+    elif args.eval_thresholds:
+        cmd_eval_thresholds()
+    elif args.eval_intervals:
+        cmd_eval_intervals(args.interval_target)
 
 
 if __name__ == '__main__':

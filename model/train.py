@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 from catboost import CatBoostRegressor, Pool
 
-from .features import FEATURE_COLS, TARGET_COL
+from .features import FEATURE_COLS, TARGET_COL, TARGET_RAW_DELTA_COL, PRODUCT_TARGET_TYPE
 
 ARTIFACTS_DIR = Path(__file__).parent / 'artifacts'
 MODEL_PATH = ARTIFACTS_DIR / 'catboost_iv_1m.cbm'
@@ -119,13 +119,39 @@ def evaluate_and_save(
     )
     top15 = sorted(fi.items(), key=lambda x: x[1], reverse=True)[:15]
 
+    # ── Raw-delta metrics for interpretability ────────────────────────────────
+    # Convert sigma_normalized predictions back to raw-delta space so output
+    # is directly comparable with the historical baseline numbers.
+    raw_metrics: dict = {}
+    test_clean2 = test_df.dropna(subset=[TARGET_COL])
+    has_raw = (
+        'iv_rolling_std_20' in test_clean2.columns
+        and TARGET_RAW_DELTA_COL in test_clean2.columns
+    )
+    if has_raw:
+        rolling_std_test = test_clean2['iv_rolling_std_20'].values
+        pred_delta_test = test_pred * rolling_std_test
+        true_delta_test = test_clean2[TARGET_RAW_DELTA_COL].values
+        raw_metrics = {
+            'rmse': round(_rmse(true_delta_test, pred_delta_test), 6),
+            'mae': round(_mae(true_delta_test, pred_delta_test), 6),
+        }
+        raw_baseline_rmse = round(_rmse(true_delta_test, np.zeros(len(true_delta_test))), 6)
+
     # Print summary
     print('\n=== Training complete ===')
+    print(f'Target: {PRODUCT_TARGET_TYPE}  (production target)')
     print(f'Train rows: {len(train_clean)}  |  Val rows: {len(val_df)}  |  Test rows: {len(test_df)}')
-    print(f'Val  - RMSE: {metrics["val"]["rmse"]:.4f}  MAE: {metrics["val"]["mae"]:.4f}  MAPE: {metrics["val"]["mape"]:.2f}%')
-    print(f'Test - RMSE: {metrics["test"]["rmse"]:.4f}  MAE: {metrics["test"]["mae"]:.4f}  MAPE: {metrics["test"]["mape"]:.2f}%')
-    print(f'Naive baseline (Test RMSE): {baseline_rmse:.4f}')
-    print(f'Model improvement vs baseline: {(baseline_rmse - metrics["test"]["rmse"]) / baseline_rmse * 100:.1f}%')
+    print()
+    print(f'  [sigma space]  Val  RMSE: {metrics["val"]["rmse"]:.4f}  MAE: {metrics["val"]["mae"]:.4f}')
+    print(f'  [sigma space]  Test RMSE: {metrics["test"]["rmse"]:.4f}  MAE: {metrics["test"]["mae"]:.4f}')
+    print(f'  [sigma space]  Baseline (predict z=0): RMSE = {baseline_rmse:.4f}')
+    if raw_metrics:
+        print()
+        print(f'  [raw delta IV] Test RMSE: {raw_metrics["rmse"]:.6f}  MAE: {raw_metrics["mae"]:.6f}')
+        print(f'  [raw delta IV] Baseline (predict Δ=0): RMSE = {raw_baseline_rmse:.6f}')
+        pct = (raw_baseline_rmse - raw_metrics["rmse"]) / raw_baseline_rmse * 100
+        print(f'  [raw delta IV] Model vs baseline: {pct:+.1f}%')
     print('\nTop-15 feature importances:')
     for name, score in top15:
         print(f'  {name:<30} {score:.2f}')
@@ -141,8 +167,14 @@ def evaluate_and_save(
 
     metadata = {
         'trained_at': datetime.now().isoformat(timespec='seconds'),
-        'feature_cols': feature_cols,
         'target_col': TARGET_COL,
+        'target_type': PRODUCT_TARGET_TYPE,
+        'target_note': (
+            'Model predicts z = delta_iv / rolling_std_20. '
+            'Inverse transform: pred_delta = z * iv_rolling_std_20 (from dataset last row). '
+            'pred_iv = current_iv + pred_delta.'
+        ),
+        'feature_cols': feature_cols,
         'train_period': {
             'start': train_dates.min(),
             'end': train_dates.max(),
@@ -155,8 +187,10 @@ def evaluate_and_save(
             'start': test_dates.min(),
             'end': test_dates.max(),
         },
-        'metrics': metrics,
-        'baseline_test_rmse': baseline_rmse,
+        'metrics_sigma_space': metrics,
+        'metrics_raw_delta': raw_metrics if raw_metrics else {},
+        'baseline_test_rmse_sigma': baseline_rmse,
+        'baseline_test_rmse_raw': raw_baseline_rmse if has_raw else None,
         'n_train_rows': len(train_clean),
         'n_val_rows': len(val_df),
         'n_test_rows': len(test_clean),
@@ -269,14 +303,30 @@ def walk_forward_cv(
         )
 
         X_eval = eval_df[feature_cols]
-        y_eval = eval_df[TARGET_COL].values
+        y_eval = eval_df[TARGET_COL].values   # sigma_normalized space
         y_pred = model.predict(X_eval)
 
-        # Naive baseline for delta target: predict 0 (no change in IV)
+        # Baseline: predict 0 (no IV change → z = 0 in sigma space)
         baseline_pred = np.zeros(len(y_eval))
 
         metrics = _compute_metrics(y_eval, y_pred)
         baseline_rmse = round(_rmse(y_eval, baseline_pred), 6)
+
+        # ── Raw-delta metrics (for interpretability) ──────────────────────────
+        raw_rmse = raw_baseline_rmse = raw_sign_acc = float('nan')
+        if (
+            'iv_rolling_std_20' in eval_df.columns
+            and TARGET_RAW_DELTA_COL in eval_df.columns
+        ):
+            rolling_std = eval_df['iv_rolling_std_20'].values
+            pred_delta = y_pred * rolling_std
+            true_delta = eval_df[TARGET_RAW_DELTA_COL].values
+            raw_rmse = round(_rmse(true_delta, pred_delta), 6)
+            raw_baseline_rmse = round(_rmse(true_delta, np.zeros(len(true_delta))), 6)
+            nz = true_delta != 0
+            raw_sign_acc = round(
+                float((np.sign(true_delta[nz]) == np.sign(pred_delta[nz])).mean()), 4
+            ) if nz.sum() > 0 else float('nan')
 
         results.append({
             'fold': fold,
@@ -285,18 +335,26 @@ def walk_forward_cv(
             'eval_end': min(eval_end, date_max).date().isoformat(),
             'n_train': len(internal_train),
             'n_eval': len(eval_df),
-            'rmse': metrics['rmse'],
-            'mae': metrics['mae'],
-            'mape': metrics['mape'],
-            'baseline_rmse': baseline_rmse,
-            'beats_baseline': metrics['rmse'] < baseline_rmse,
+            # sigma space (training loss space)
+            'rmse_sigma': metrics['rmse'],
+            'mae_sigma': metrics['mae'],
+            'baseline_rmse_sigma': baseline_rmse,
+            'beats_baseline_sigma': metrics['rmse'] < baseline_rmse,
+            # raw delta space (interpretable)
+            'rmse_raw': raw_rmse,
+            'baseline_rmse_raw': raw_baseline_rmse,
+            'beats_baseline_raw': raw_rmse < raw_baseline_rmse if not np.isnan(raw_rmse) else False,
+            'sign_accuracy': raw_sign_acc,
         })
 
-        beat_str = "beats" if metrics["rmse"] < baseline_rmse else "loses"
+        beat_str = 'beats' if metrics['rmse'] < baseline_rmse else 'loses'
+        sign_str = f'{raw_sign_acc:.3f}' if not np.isnan(raw_sign_acc) else '  n/a'
         print(
-            f'  Fold {fold:2d} | train->{train_end.date()} | eval {eval_start.date()}-{min(eval_end, date_max).date()} '
-            f'| n_eval={len(eval_df):3d} | RMSE={metrics["rmse"]:.5f} '
-            f'| baseline={baseline_rmse:.5f} | {beat_str}'
+            f'  Fold {fold:2d} | train->{train_end.date()} | '
+            f'eval {eval_start.date()}-{min(eval_end, date_max).date()} '
+            f'| n_eval={len(eval_df):3d} '
+            f'| RMSE_σ={metrics["rmse"]:.5f} (base={baseline_rmse:.5f}) {beat_str} '
+            f'| RMSE_Δ={raw_rmse:.5f} | sign={sign_str}'
         )
 
         train_end += relativedelta(months=step_months)

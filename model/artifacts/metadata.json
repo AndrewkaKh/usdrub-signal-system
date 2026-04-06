@@ -1,5 +1,8 @@
 {
-  "trained_at": "2026-04-09T15:20:43",
+  "trained_at": "2026-04-12T17:17:58",
+  "target_col": "target_sigma_normalized",
+  "target_type": "sigma_normalized_delta",
+  "target_note": "Model predicts z = delta_iv / rolling_std_20. Inverse transform: pred_delta = z * iv_rolling_std_20 (from dataset last row). pred_iv = current_iv + pred_delta.",
   "feature_cols": [
     "iv_1m",
     "hv_1m",
@@ -38,7 +41,6 @@
     "vix_roll5_mean",
     "cbr_rate"
   ],
-  "target_col": "target_delta_iv_1m",
   "train_period": {
     "start": "2021-02-08",
     "end": "2024-12-26"
@@ -51,19 +53,24 @@
     "start": "2025-08-01",
     "end": "2026-02-26"
   },
-  "metrics": {
+  "metrics_sigma_space": {
     "val": {
-      "rmse": 0.014217,
-      "mae": 0.01015,
-      "mape": 180.1503
+      "rmse": 1.070605,
+      "mae": 0.727107,
+      "mape": 157.2295
     },
     "test": {
-      "rmse": 0.008749,
-      "mae": 0.005857,
-      "mape": 846.5343
+      "rmse": 1.129669,
+      "mae": 0.723567,
+      "mape": 248.8175
     }
   },
-  "baseline_test_rmse": 0.009037,
+  "metrics_raw_delta": {
+    "rmse": 0.008744,
+    "mae": 0.005797
+  },
+  "baseline_test_rmse_sigma": 1.148014,
+  "baseline_test_rmse_raw": 0.009037,
   "n_train_rows": 903,
   "n_val_rows": 135,
   "n_test_rows": 130,

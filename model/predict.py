@@ -8,8 +8,9 @@ import pandas as pd
 from catboost import CatBoostRegressor
 
 from .data_prep import prepare_dataset
-from .features import TARGET_COL
+from .features import TARGET_COL, PRODUCT_TARGET_TYPE
 from .range_forecast import compute_spot_range
+from .targets import SIGMA_NORM, inverse_transform
 
 ARTIFACTS_DIR = Path(__file__).parent / 'artifacts'
 MODEL_PATH = ARTIFACTS_DIR / 'catboost_iv_1m.cbm'
@@ -76,11 +77,47 @@ def predict_next_day(
         )
 
     X = last_row[feature_cols]
-    predicted_delta = float(model.predict(X)[0])
+    raw_prediction = float(model.predict(X)[0])  # in target space (sigma_normalized)
     current_iv = float(last_row['iv_1m'].iloc[0])
-    predicted_iv = current_iv + predicted_delta
     last_date = str(last_row['date'].iloc[0].date())
 
+    # ── Inverse transform: sigma_normalized → raw delta ───────────────────────
+    # Determine target type from metadata.
+    # Legacy models (trained before this change) have target_col='target_delta_iv_1m'
+    # and no 'target_type' key — treat them as RAW_DELTA so their outputs are
+    # used as-is without incorrect inverse transform.
+    from .targets import RAW_DELTA
+    if 'target_type' in metadata:
+        target_type = metadata['target_type']
+    elif metadata.get('target_col') == 'target_delta_iv_1m':
+        target_type = RAW_DELTA   # legacy model
+    else:
+        target_type = PRODUCT_TARGET_TYPE
+
+    if target_type == SIGMA_NORM:
+        if 'iv_rolling_std_20' not in last_row.columns:
+            raise RuntimeError(
+                'iv_rolling_std_20 is missing from dataset. '
+                'Re-run --retrain to rebuild with the updated pipeline.'
+            )
+        current_rolling_std = float(last_row['iv_rolling_std_20'].iloc[0])
+        if np.isnan(current_rolling_std) or current_rolling_std <= 0:
+            raise RuntimeError(
+                f'iv_rolling_std_20 is invalid ({current_rolling_std}). '
+                'Insufficient historical data to compute rolling std.'
+            )
+        predicted_delta = inverse_transform(
+            SIGMA_NORM,
+            np.array([raw_prediction]),
+            np.array([current_iv]),
+            np.array([current_rolling_std]),
+        )[0]
+    else:
+        # Fallback for legacy models trained on raw_delta
+        predicted_delta = raw_prediction
+        current_rolling_std = None
+
+    predicted_iv = current_iv + predicted_delta
     iv_change_pct = round(predicted_delta / current_iv * 100, 2)
 
     range_result = compute_spot_range(
@@ -91,7 +128,11 @@ def predict_next_day(
 
     return {
         'date': last_date,
+        'target_type': target_type,
         'current_iv_1m': round(current_iv, 6),
+        'predicted_z': round(raw_prediction, 6) if target_type == SIGMA_NORM else None,
+        'current_rolling_std': round(current_rolling_std, 6) if current_rolling_std is not None else None,
+        'predicted_delta_iv': round(predicted_delta, 6),
         'predicted_iv_1m': round(predicted_iv, 6),
         'iv_change_pct': iv_change_pct,
         'spot_price': spot_price,
