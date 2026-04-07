@@ -1,0 +1,23 @@
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+
+# mounted as volume at runtime
+data/
+
+# dev/IDE
+.idea/
+.vscode/
+.DS_Store
+.claude
+
+# secrets
+.env
+
+# docs and misc
+docs/
+catboost_info/
+*.bat

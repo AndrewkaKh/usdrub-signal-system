@@ -89,8 +89,10 @@ def _vol_block_from_snapshot(iv_snap, hv_snap) -> str:
     return '\n'.join(lines)
 
 
-def _vol_block_from_end(iv_end: dict | None) -> str:
+def _vol_block_from_end(iv_end: dict | None, non_trading_day: bool = False) -> str:
     """Build IV table from end-of-day smile ATM values."""
+    if non_trading_day:
+        return '_не торговый день_'
     if not iv_end:
         return '⚠️ _данные недоступны_'
     lines = ['```', f'{"":5s}  {"IV ATM":>7}']
@@ -101,8 +103,10 @@ def _vol_block_from_end(iv_end: dict | None) -> str:
     return '\n'.join(lines)
 
 
-def _smile_block(smile_metrics: dict | None) -> str:
+def _smile_block(smile_metrics: dict | None, non_trading_day: bool = False) -> str:
     """Format smile metrics for 1m tenor."""
+    if non_trading_day:
+        return '_не торговый день_'
     if not smile_metrics:
         return '⚠️ _данные улыбки недоступны_'
     m1 = smile_metrics.get('1m')
@@ -194,6 +198,7 @@ def format_evening(payload: dict) -> str:
     ext = payload.get('ext_features')
     ext_fresh = payload.get('ext_fresh', False)
     pred = payload.get('prediction')
+    non_trading_day = payload.get('non_trading_day', False)
 
     spot_str = f'*{_price(spot)} ₽*' if spot else '—'
 
@@ -204,10 +209,10 @@ def format_evening(payload: dict) -> str:
         f'Курс закрытия (Si): {spot_str}',
         '',
         '📈 *Волатильность ATM:*',
-        _vol_block_from_end(iv_end),
+        _vol_block_from_end(iv_end, non_trading_day),
         '',
         '🎯 *Улыбка (1M):*',
-        _smile_block(smile_metrics),
+        _smile_block(smile_metrics, non_trading_day),
         '',
         '🤖 *Прогноз на завтра:*',
         _prediction_block(pred),

@@ -62,6 +62,7 @@ def run_daily_pipeline(
     model_csv: str = DEFAULT_MODEL_CSV,
     iv_csv: str = DEFAULT_IV_CSV,
     hv_csv: str = DEFAULT_HV_CSV,
+    model_export_start_date: str = '2021-01-01',
 ) -> dict:
     """Run the full daily data pipeline for the given date range.
 
@@ -146,16 +147,21 @@ def run_daily_pipeline(
     # --- Dataset ---
     if not skip_dataset:
         logger.info('Dataset: building IV / HV / model dataset')
+        # Order matters: build_hv_daily reads the iv_daily TABLE, and
+        # build_model_dataset_daily reads both iv_daily and hv_daily TABLEs.
+        # Save each result before building the next to ensure fresh data is visible.
         iv_daily = build_iv_daily(connection=connection, start_date=start_iso, end_date=end_iso)
+        result['iv_rows'] = len(iv_daily)
+        result['iv_saved'] = save_iv_daily(connection, iv_daily)
+
         hv_daily = build_hv_daily(connection=connection, start_date=start_iso, end_date=end_iso)
+        result['hv_rows'] = len(hv_daily)
+        result['hv_saved'] = save_hv_daily(connection, hv_daily)
+
         model_dataset = build_model_dataset_daily(
             connection=connection, start_date=start_iso, end_date=end_iso,
         )
-        result['iv_rows'] = len(iv_daily)
-        result['hv_rows'] = len(hv_daily)
         result['dataset_rows'] = len(model_dataset)
-        result['iv_saved'] = save_iv_daily(connection, iv_daily)
-        result['hv_saved'] = save_hv_daily(connection, hv_daily)
         result['dataset_saved'] = save_model_dataset_daily(connection, model_dataset)
         logger.info(
             'Dataset done: iv=%d hv=%d model=%d',
@@ -167,7 +173,7 @@ def run_daily_pipeline(
         logger.info('Export: writing CSVs')
         result['model_csv'] = export_model_dataset_daily(
             connection=connection, output_path=model_csv,
-            start_date=start_iso, end_date=end_iso,
+            start_date=model_export_start_date, end_date=end_iso,
         )
         result['iv_csv'] = export_iv_daily(
             connection=connection, output_path=iv_csv,

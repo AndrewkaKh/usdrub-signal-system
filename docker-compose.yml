@@ -1,0 +1,11 @@
+services:
+  bot:
+    build: .
+    env_file: .env
+    volumes:
+      # Persist SQLite DB, CSV exports, bot_state.json across restarts
+      - ./data:/app/data
+    restart: unless-stopped
+    # Timezone matters for the 10:00 / 20:30 schedule in bot_runner.py
+    environment:
+      - TZ=Europe/Moscow

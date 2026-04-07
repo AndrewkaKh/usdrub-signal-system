@@ -41,6 +41,7 @@ def predict_next_day(
     dataset_csv_path: str,
     spot_price: float,
     confidence: float = 0.90,
+    as_of_date: str | None = None,
 ) -> dict:
     """Predict IV for the next trading day and compute the expected spot range.
 
@@ -52,6 +53,10 @@ def predict_next_day(
         Current USD/RUB spot price.
     confidence:
         Confidence level for the price range (0.68, 0.90, 0.95, or 0.99).
+    as_of_date:
+        If provided (ISO string), simulate a prediction as of that date —
+        only rows up to and including this date are used. Useful for
+        historical backtesting. If None, uses all available data (latest row).
 
     Returns
     -------
@@ -60,8 +65,12 @@ def predict_next_day(
     model, metadata = _load_artifacts()
     feature_cols: list[str] = metadata['feature_cols']
 
-    # Prepare dataset and take the last meaningful window of rows for features
     df = prepare_dataset(dataset_csv_path)
+
+    if as_of_date is not None:
+        df = df[df['date'] <= pd.Timestamp(as_of_date)]
+        if df.empty:
+            raise ValueError(f'No data available on or before {as_of_date}')
 
     # The last row's target is NaN (no next-day observation) — that is exactly
     # what we want to predict. Use the last row with a valid feature vector.
@@ -144,27 +153,46 @@ def predict_next_day(
     }
 
 
-def get_spot_price_from_db(db_path: str) -> float | None:
-    """Get the latest futures settlement price as a proxy for spot USD/RUB.
+def get_spot_price_from_db(db_path: str, as_of_date: str | None = None) -> float | None:
+    """Get futures settlement price as a proxy for spot USD/RUB.
 
     MOEX Si futures are priced in rubles per 1000 USD (e.g. 85000 means 85.0 RUB/USD).
     Returns the spot-equivalent price (futures_price / 1000).
-    Returns None if the DB is unavailable or empty.
+
+    Parameters
+    ----------
+    as_of_date:
+        If provided, return the settlement price for that specific date.
+        If None, return the latest available price.
     """
     import sqlite3
 
     try:
         conn = sqlite3.connect(db_path)
-        row = conn.execute(
-            '''
-            SELECT settlement_price
-            FROM futures_raw
-            WHERE settlement_price > 0
-              AND secid GLOB 'Si[FGHJKMNQUVXZ][0-9]*'
-            ORDER BY date DESC, settlement_price ASC
-            LIMIT 1
-            '''
-        ).fetchone()
+        if as_of_date:
+            row = conn.execute(
+                '''
+                SELECT settlement_price
+                FROM futures_raw
+                WHERE settlement_price > 0
+                  AND secid GLOB 'Si[FGHJKMNQUVXZ][0-9]*'
+                  AND date = ?
+                ORDER BY settlement_price ASC
+                LIMIT 1
+                ''',
+                [as_of_date],
+            ).fetchone()
+        else:
+            row = conn.execute(
+                '''
+                SELECT settlement_price
+                FROM futures_raw
+                WHERE settlement_price > 0
+                  AND secid GLOB 'Si[FGHJKMNQUVXZ][0-9]*'
+                ORDER BY date DESC, settlement_price ASC
+                LIMIT 1
+                '''
+            ).fetchone()
         conn.close()
         if row and row[0]:
             return round(row[0] / 1000.0, 4)

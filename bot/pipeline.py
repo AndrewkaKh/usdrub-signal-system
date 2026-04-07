@@ -75,14 +75,14 @@ def _hv_snapshot(iv_snap):
     return calculate_hv_snapshot(iv_snap)
 
 
-def _predict(spot: float) -> dict | None:
+def _predict(spot: float, as_of_date: str | None = None) -> dict | None:
     from model.predict import predict_next_day
-    return predict_next_day(_get_dataset_csv(), spot_price=spot, confidence=0.90)
+    return predict_next_day(_get_dataset_csv(), spot_price=spot, confidence=0.90, as_of_date=as_of_date)
 
 
-def _spot_from_db() -> float | None:
+def _spot_from_db(as_of_date: str | None = None) -> float | None:
     from model.predict import get_spot_price_from_db
-    return get_spot_price_from_db(_get_db_path())
+    return get_spot_price_from_db(_get_db_path(), as_of_date=as_of_date)
 
 
 def _spot_from_snapshot(iv_snap) -> float | None:
@@ -188,6 +188,7 @@ def evening_payload(date_str: str | None = None) -> tuple[dict, str | None]:
         'ext_fresh': False,
         'prediction': None,
         'pipeline_result': None,
+        'non_trading_day': False,
         'errors': [],
     }
     png_path: str | None = None
@@ -197,6 +198,8 @@ def evening_payload(date_str: str | None = None) -> tuple[dict, str | None]:
     payload['pipeline_result'] = pipeline_result
     if pipeline_result is None:
         payload['errors'].append('daily pipeline failed — data may be missing')
+    else:
+        payload['non_trading_day'] = _is_non_trading_day(date_str)
 
     # 2. Update external features
     _safe('update external features', _update_ext, date_str)
@@ -214,8 +217,8 @@ def evening_payload(date_str: str | None = None) -> tuple[dict, str | None]:
         # 4. Generate smile PNG
         png_path = _safe('smile chart', _generate_smile_png, date_str)
 
-    # 5. Spot price
-    spot = _safe('spot from DB', _spot_from_db)
+    # 5. Spot price — use historical date so retro reports show correct closing price
+    spot = _safe('spot from DB', _spot_from_db, date_str)
     if spot is None and smile_df is not None and not smile_df.empty:
         try:
             spot = round(smile_df['futures_price'].iloc[0] / 1000.0, 4)
@@ -224,8 +227,9 @@ def evening_payload(date_str: str | None = None) -> tuple[dict, str | None]:
     payload['spot'] = spot
 
     # 6. Model prediction (for tomorrow)
+    # Pass as_of_date so historical reports use data as it was on that date.
     if spot is not None and Path(_get_dataset_csv()).exists():
-        payload['prediction'] = _safe('prediction', _predict, spot)
+        payload['prediction'] = _safe('prediction', _predict, spot, date_str)
     else:
         payload['errors'].append('prediction skipped: no dataset CSV or spot price')
 
@@ -235,6 +239,35 @@ def evening_payload(date_str: str | None = None) -> tuple[dict, str | None]:
 # ---------------------------------------------------------------------------
 # Private helpers for evening
 # ---------------------------------------------------------------------------
+
+def _is_non_trading_day(date_str: str) -> bool:
+    """Return True if date_str is a non-trading day on MOEX.
+
+    Uses two signals:
+    1. No futures rows in DB for that date (after the pipeline ran).
+    2. Current Moscow time is past 19:30 — by then MOEX always publishes
+       settlement data for trading days. Before 19:30 we can't be sure:
+       0 rows may simply mean the session hasn't settled yet.
+    """
+    import sqlite3 as _sqlite3
+    from datetime import timezone, timedelta
+
+    msk = timezone(timedelta(hours=3))
+    now_msk = datetime.now(msk)
+    # Before 19:30 MSK settlement data is not yet guaranteed to be published
+    if now_msk.hour < 19 or (now_msk.hour == 19 and now_msk.minute < 30):
+        return False
+
+    try:
+        conn = _sqlite3.connect(_get_db_path())
+        count = conn.execute(
+            'SELECT COUNT(*) FROM futures_raw WHERE date = ?', [date_str]
+        ).fetchone()[0]
+        conn.close()
+        return count == 0
+    except Exception:
+        return False
+
 
 def _run_evening_pipeline(date_str: str) -> dict:
     from processing.backfill import get_connection, initialize_database
@@ -254,11 +287,15 @@ def _run_evening_pipeline(date_str: str) -> dict:
             skip_export=True,
         )
         # Export full historical dataset so predict_next_day has all lags.
+        # Use the latest date in the table, not date_str — otherwise generating
+        # a report for a past date would truncate the CSV, dropping newer rows.
+        row = conn.execute('SELECT MAX(date) FROM model_dataset_daily').fetchone()
+        export_end = row[0] if row and row[0] else date_str
         export_model_dataset_daily(
             connection=conn,
             output_path=_get_dataset_csv(),
             start_date='2021-01-01',
-            end_date=date_str,
+            end_date=export_end,
         )
         return result
     finally:
